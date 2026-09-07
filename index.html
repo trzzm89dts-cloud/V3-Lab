@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no"/>
+<meta name="theme-color" content="#06060c"/>
+<title>Harmonic Entrainment Engine · V3 Lab</title>
+<style>
+html,body,#root{margin:0;width:100%;height:100%;background:#06060c;overflow:hidden;}
+*{box-sizing:border-box;}
+button,input{touch-action:manipulation;}
+body{overscroll-behavior:none;-webkit-user-select:none;user-select:none;}
+input{-webkit-user-select:auto;user-select:auto;}
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+const PHI = 1.618033988749895;
+
+/* Primary ratios: wide-spaced harmonics that fuse cleanly.
+   These match our original 144 stack: root, fourth, fifth, octave, tenth, twelfth.
+   Secondary ratios fill in for roots where primaries fall outside the Oster zone. */
+const PRIMARY_RATIOS = [
+  { r:1, l:"1:1", n:"root" },
+  { r:4/3, l:"4:3", n:"fourth" },
+  { r:3/2, l:"3:2", n:"fifth" },
+  { r:2, l:"2:1", n:"octave" },
+  { r:5/2, l:"5:2", n:"tenth" },
+  { r:3, l:"3:1", n:"twelfth" },
+];
+const SECONDARY_RATIOS = [
+  { r:5/4, l:"5:4", n:"maj 3rd" }, { r:5/3, l:"5:3", n:"sixth" },
+  { r:6/5, l:"6:5", n:"min 3rd" }, { r:7/4, l:"7:4", n:"7th" },
+  { r:1/2, l:"1:2", n:"sub-oct" }, { r:2/3, l:"2:3", n:"sub-5th" },
+  { r:3/4, l:"3:4", n:"sub-4th" }, { r:5/6, l:"5:6", n:"sub-3rd" },
+];
+
+function buildStack(root) {
+  const MIN_HZ = 110, MAX_HZ = 480, TARGET = 6;
+  const make = (arr) => arr.map(x => ({
+    hz: Math.round(root * x.r * 100) / 100, label: x.l, name: x.n, ratio: x.r
+  })).filter(x => x.hz >= MIN_HZ && x.hz <= MAX_HZ);
+
+  // Start with primary harmonics
+  let raw = make(PRIMARY_RATIOS);
+
+  // Fill with secondaries if primaries don't reach TARGET
+  if (raw.length < TARGET) {
+    const sec = make(SECONDARY_RATIOS).sort((a, b) => a.ratio > 1 ? a.hz - b.hz : b.hz - a.hz);
+    for (const s of sec) {
+      if (raw.length >= TARGET) break;
+      // only add if not within 8 Hz of existing
+      if (!raw.some(r => Math.abs(r.hz - s.hz) < 8)) raw.push(s);
+    }
+  }
+  raw.sort((a, b) => a.hz - b.hz);
+  return raw.slice(0, TARGET);
+}
+
+
+/* v3 laboratory carrier field: a compact six-note just-intonation chord.
+   The root is octave-folded into the 110–480 Hz carrier window, then
+   voiced as 1:1, 9:8, 5:4, 4:3, 3:2, 5:3. This intentionally separates
+   the audible carrier sonority from the binaural beat architecture. */
+const CHORD_RATIOS = [
+  { r:1, l:"1:1", n:"root" },
+  { r:9/8, l:"9:8", n:"major 2nd" },
+  { r:5/4, l:"5:4", n:"major 3rd" },
+  { r:4/3, l:"4:3", n:"fourth" },
+  { r:3/2, l:"3:2", n:"fifth" },
+  { r:5/3, l:"5:3", n:"sixth" },
+];
+
+function foldToCarrierWindow(hz) {
+  let x = hz;
+  while (x < 110) x *= 2;
+  while (x > 480) x /= 2;
+  return x;
+}
+
+function buildConsonantStack(root) {
+  const pivot = foldToCarrierWindow(root);
+  return CHORD_RATIOS.map(x => {
+    let hz = foldToCarrierWindow(pivot * x.r);
+    return { hz: Math.round(hz * 100) / 100, label:x.l, name:x.n, ratio:x.r };
+  }).sort((a,b) => a.hz - b.hz);
+}
+
+const ROOT_PRESETS = [
+  { hz: 144, name: "144 Hz", desc: "Fibonacci 12² — our original root" },
+  { hz: 432, name: "432 Hz", desc: "Pythagorean A — harmonic sibling of 144" },
+];
+
+/* ─── States: layers use carrier INDEX, resolved at render ─── */
+const bandName = (hz) => { const a = Math.abs(hz); return a<0.5?"infra":a<4?"delta":a<8?"theta":a<13?"alpha":a<30?"beta":"gamma"; };
+const bandColor = (hz) => { const a = Math.abs(hz); return a<0.5?"#7766bb":a<4?"#5588cc":a<8?"#44bb99":a<13?"#99cc44":a<30?"#ccaa33":"#ee8833"; };
+
+function makeStates() {
+  const p = (f, n) => +(f * Math.pow(PHI, n)).toFixed(2) * 1;
+  return [
+    { id:"ground", name:"Ground", subtitle:"Centered Return",
+      desc:"SMR/low-beta for grounded waking presence. Three carriers deliver a gentle beta field — a landing pad after deeper states.",
+      band:"SMR (12–15 Hz)", seed:14, color:"#8aaa7c",
+      layers:[{ci:3,beat:12},{ci:4,beat:14},{ci:5,beat:15}]},
+    { id:"still", name:"Still", subtitle:"Alpha Quiet",
+      desc:"φ descent: 10/φ² ≈ 3.82 theta anchor, 10/φ ≈ 6.18 border, 10 Hz alpha canopy across upper carriers.",
+      band:"Theta → Alpha (φ-scaled)", seed:10, color:"#55bb88",
+      layers:[{ci:0,beat:p(10,-2)},{ci:1,beat:p(10,-1)},{ci:2,beat:10},{ci:3,beat:10},{ci:4,beat:10}]},
+    { id:"deep", name:"Deep", subtitle:"Theta Floor",
+      desc:"Meditation bedrock. 6 Hz seed reinforced across four upper carriers. 1.5 Hz delta anchor on root. 6/φ ≈ 3.71 Hz deep theta on the fourth.",
+      band:"Delta (1.5) + Theta (3.71–6 Hz)", seed:6, color:"#5599cc",
+      layers:[{ci:0,beat:1.5},{ci:1,beat:p(6,-1)},{ci:2,beat:6},{ci:3,beat:6},{ci:4,beat:6},{ci:5,beat:6}]},
+    { id:"liminal", name:"Liminal", subtitle:"Threshold · 6L",
+      desc:"Pure φ progression — one beat per carrier, no doubling. 4/φ³ → 4/φ² → 4/φ → 4 → 4×φ → 4×φ². Each carrier maps to exactly one power of the golden ratio. The cleanest compound state.",
+      band:"Infra-slow → θ → α (4Hz φ-scaled)", seed:4, color:"#aa66cc",
+      layers:[{ci:0,beat:p(4,-3)},{ci:1,beat:p(4,-2)},{ci:2,beat:p(4,-1)},{ci:3,beat:4},{ci:4,beat:p(4,1)},{ci:5,beat:p(4,2)}]},
+    { id:"lucid", name:"Lucid", subtitle:"θ-γ Coupling · 8L",
+      desc:"6 primary beats (one per carrier) + 2 gamma overlays at 35% gain. The gamma shares carriers with the upper theta layers — reduced-gain overlay, not competition. 32 Hz = 4×2³, three octaves above theta seed. 15–20 min recommended.",
+      band:"Infra-slow → θ → γ (32 Hz overlay)", seed:4, color:"#ddaa33",
+      layers:[{ci:0,beat:p(4,-3)},{ci:1,beat:p(4,-1)},{ci:2,beat:4},{ci:3,beat:4},{ci:4,beat:p(4,1)},{ci:5,beat:p(4,1)},{ci:4,beat:32,gain:0.35},{ci:5,beat:32,gain:0.35}]},
+    { id:"void", name:"Void", subtitle:"Infra-Slow Descent",
+      desc:"φ-scaled from 1.5 Hz delta seed. A 3 Hz theta lifeline on the highest carrier prevents total unconsciousness.",
+      band:"Infra-slow → Delta → θ (3 Hz)", seed:1.5, color:"#4466aa",
+      layers:[{ci:0,beat:p(1.5,-2)},{ci:1,beat:p(1.5,-1)},{ci:2,beat:1.5},{ci:3,beat:1.5},{ci:4,beat:p(1.5,1)},{ci:5,beat:3}]},
+    { id:"flow", name:"Flow", subtitle:"Theta Current",
+      desc:"θ-α border from 7 Hz seed. One beat per carrier — clean φ map with theta reinforcement across the mid-range. Steady engagement without descent.",
+      band:"θ-α (7 Hz φ-map)", seed:7, color:"#cc6688",
+      layers:[{ci:0,beat:p(7,-2)},{ci:1,beat:p(7,-1)},{ci:2,beat:7},{ci:3,beat:7},{ci:4,beat:7},{ci:5,beat:p(7,1)}]},
+    { id:"asset", name:"Asset", subtitle:"Operational Vigilance",
+      desc:"Full-spectrum φ-cascade from a 3.2 Hz seed — buried theta floor and gamma ceiling held at once. No descent and no variance: a fixed, cold operational state. A 40 Hz overlay on the scan carrier at 40% gain delivers the recognition snap. Auto-sets a 110 Hz root for a darker carrier palette.",
+      band:"θ floor → γ snap (3.2 Hz φ-cascade)", seed:3.2, color:"#7d8c9e", preferredRoot:110,
+      layers:[{ci:0,beat:p(3.2,0)},{ci:1,beat:p(3.2,1)},{ci:2,beat:p(3.2,2)},{ci:3,beat:p(3.2,3)},{ci:4,beat:p(3.2,4)},{ci:5,beat:p(3.2,5)},{ci:4,beat:40,gain:0.4}]},
+  ];
+}
+
+const STATES = makeStates();
+
+/* ─── Component ─── */
+function HarmonicEngine() {
+  const [root, setRoot] = useState(144);
+  const [rootInput, setRootInput] = useState("144");
+  const [stateIdx, setStateIdx] = useState(3);
+  const [volume, setVolume] = useState(0.22);
+  const [playing, setPlaying] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  const [pinkNoise, setPinkNoise] = useState(false);
+  const [pinkVol, setPinkVol] = useState(0.08);
+  const [timerMin, setTimerMin] = useState(0); // 0 = no timer
+  const [remaining, setRemaining] = useState(null);
+  const [carrierMode, setCarrierMode] = useState("chord"); // v3 default: musical carrier field
+  const [showLab, setShowLab] = useState(false);
+  const [mutedLayers, setMutedLayers] = useState([]);
+  const [soloLayer, setSoloLayer] = useState(null);
+
+  const engineRef = useRef(null);  // persistent { ac, master, pinkGain }
+  const voicesRef = useRef(null);  // active voice group { group, oscs }
+  const timerRef = useRef(null);
+  const canvasRef = useRef(null);
+  const animRef = useRef(null);
+
+  const XFADE = 2.0;     // s — crossfade between states/roots
+  const EDGE_FADE = 1.5; // s — begin/stop fade
+
+  const stack = carrierMode === "legacy" ? buildStack(root) : buildConsonantStack(root);
+  const state = STATES[stateIdx];
+
+  // Resolve layers: carrier index → actual Hz from current stack
+  const resolvedLayers = state.layers.map((l, i) => ({
+    ...l,
+    index: i,
+    carrier: stack[Math.min(l.ci, stack.length - 1)]?.hz || 200,
+    muted: mutedLayers.includes(i) || (soloLayer !== null && soloLayer !== i)
+  }));
+  const playbackLayers = resolvedLayers.map(l => ({
+    ...l,
+    effectiveGain: l.muted ? 0 : (l.gain ?? 1)
+  }));
+  const muteKey = mutedLayers.join(",");
+
+  /* ─── Persistent audio engine ───
+     One AudioContext for the app's lifetime. Master gain gates all output;
+     state/root changes crossfade voice groups instead of tearing down.
+     Pink noise is built once and gated by its own gain (routed through
+     master, so it now respects the volume slider and edge fades). */
+  const getEngine = useCallback(() => {
+    if (engineRef.current) return engineRef.current;
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const master = ac.createGain();
+    master.gain.value = 0;
+    master.connect(ac.destination);
+    // Voss-McCartney pink noise — persistent, gated
+    const bufSize = ac.sampleRate * 2;
+    const buf = ac.createBuffer(1, bufSize, ac.sampleRate);
+    const data = buf.getChannelData(0);
+    let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
+    for (let i = 0; i < bufSize; i++) {
+      const w = Math.random() * 2 - 1;
+      b0 = 0.99886*b0 + w*0.0555179; b1 = 0.99332*b1 + w*0.0750759;
+      b2 = 0.96900*b2 + w*0.1538520; b3 = 0.86650*b3 + w*0.3104856;
+      b4 = 0.55000*b4 + w*0.5329522; b5 = -0.7616*b5 - w*0.0168980;
+      data[i] = (b0+b1+b2+b3+b4+b5+b6+w*0.5362)*0.11;
+      b6 = w*0.115926;
+    }
+    const pinkSrc = ac.createBufferSource();
+    pinkSrc.buffer = buf; pinkSrc.loop = true;
+    const pinkGain = ac.createGain();
+    pinkGain.gain.value = 0;
+    pinkSrc.connect(pinkGain); pinkGain.connect(master); pinkSrc.start();
+    engineRef.current = { ac, master, pinkGain };
+    return engineRef.current;
+  }, []);
+
+  /* Spawn a voice group for a layer set. Gain-sum (RMS) normalization:
+     each layer's gain is divided by sqrt(Σ gain²), so overlays at partial
+     gain no longer drag the whole state's level down. */
+  const spawnVoices = useCallback((layers) => {
+    const { ac, master } = getEngine();
+    const norm = Math.sqrt(layers.reduce((a, l) => a + (l.effectiveGain ?? l.gain ?? 1) ** 2, 0)) || 1;
+    const group = ac.createGain();
+    group.gain.value = 0;
+    group.connect(master);
+    const oscs = layers.map(layer => {
+      const lo = ac.createOscillator(), ro = ac.createOscillator();
+      const lp = ac.createStereoPanner(), rp = ac.createStereoPanner();
+      const g = ac.createGain();
+      lo.type = "sine"; ro.type = "sine";
+      lo.frequency.value = layer.carrier - layer.beat / 2;
+      ro.frequency.value = layer.carrier + layer.beat / 2;
+      lp.pan.value = -1; rp.pan.value = 1;
+      g.gain.value = (layer.effectiveGain ?? layer.gain ?? 1) / norm;
+      lo.connect(lp); lp.connect(g); ro.connect(rp); rp.connect(g);
+      g.connect(group); lo.start(); ro.start();
+      return { lo, ro, g };
+    });
+    group.gain.setTargetAtTime(1, ac.currentTime, XFADE / 4);
+    return { group, oscs };
+  }, [getEngine]);
+
+  const killVoices = useCallback((v, fade = XFADE) => {
+    if (!v || !engineRef.current) return;
+    const { ac } = engineRef.current;
+    v.group.gain.setTargetAtTime(0, ac.currentTime, Math.max(fade, 0.05) / 4);
+    setTimeout(() => {
+      try { v.oscs.forEach(o => { o.lo.stop(); o.ro.stop(); }); v.group.disconnect(); } catch(e){}
+    }, fade * 1000 + 300);
+  }, []);
+
+  const beginSession = useCallback(() => {
+    const eng = getEngine();
+    if (eng.ac.state === "suspended") eng.ac.resume();
+    killVoices(voicesRef.current, 0.1);
+    voicesRef.current = spawnVoices(playbackLayers);
+    eng.master.gain.cancelScheduledValues(eng.ac.currentTime);
+    eng.master.gain.setTargetAtTime(volume, eng.ac.currentTime, EDGE_FADE / 4);
+    eng.pinkGain.gain.setTargetAtTime(pinkNoise ? pinkVol : 0, eng.ac.currentTime, 0.3);
+  }, [getEngine, killVoices, spawnVoices, playbackLayers, volume, pinkNoise, pinkVol]);
+
+  const endSession = useCallback((fade = EDGE_FADE) => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    eng.master.gain.cancelScheduledValues(eng.ac.currentTime);
+    eng.master.gain.setTargetAtTime(0, eng.ac.currentTime, fade / 4);
+    const v = voicesRef.current;
+    voicesRef.current = null;
+    setTimeout(() => killVoices(v, 0.1), fade * 1000 + 200);
+  }, [killVoices]);
+
+  const togglePlay = () => {
+    if (playing) { endSession(); setPlaying(false); }
+    else { beginSession(); setPlaying(true); }
+  };
+
+  // Crossfade to new voice group on state/root change — no teardown, no click
+  useEffect(() => {
+    if (!playing || !engineRef.current) return;
+    const old = voicesRef.current;
+    voicesRef.current = spawnVoices(playbackLayers);
+    killVoices(old, XFADE);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stateIdx, root, carrierMode, muteKey, soloLayer]);
+
+  // Live volume
+  useEffect(() => {
+    const eng = engineRef.current;
+    if (eng && playing) eng.master.gain.setTargetAtTime(volume, eng.ac.currentTime, 0.05);
+  }, [volume, playing]);
+
+  // Pink toggle + level ride their own gain — no engine restart
+  useEffect(() => {
+    const eng = engineRef.current;
+    if (eng && playing) eng.pinkGain.gain.setTargetAtTime(pinkNoise ? pinkVol : 0, eng.ac.currentTime, 0.3);
+  }, [pinkNoise, pinkVol, playing]);
+
+  /* ─── Session timer: counts down, then long auto-fade (10 s) ─── */
+  useEffect(() => {
+    if (!playing || timerMin <= 0) {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setRemaining(null);
+      return;
+    }
+    setRemaining(timerMin * 60);
+    timerRef.current = setInterval(() => {
+      setRemaining(r => {
+        if (r === null) return null;
+        if (r <= 1) {
+          clearInterval(timerRef.current);
+          endSession(10);
+          setPlaying(false);
+          return null;
+        }
+        return r - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, timerMin]);
+
+  // Unmount: close the persistent context
+  useEffect(() => () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (engineRef.current) { try { engineRef.current.ac.close(); } catch(e){} engineRef.current = null; }
+  }, []);
+
+  /* ─── Visualization ─── */
+  useEffect(() => {
+    const cv = canvasRef.current; if (!cv) return;
+    const ctx = cv.getContext("2d"); let on = true;
+    const draw = (time) => {
+      if (!on) return;
+      const dpr = window.devicePixelRatio || 1;
+      const r = cv.getBoundingClientRect();
+      const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+      if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const w = r.width, h = r.height, t = time * 0.001;
+      ctx.fillStyle = "#0a0a12"; ctx.fillRect(0, 0, w, h);
+      const L = resolvedLayers;
+      if (!L.length) { animRef.current = requestAnimationFrame(draw); return; }
+      const labW = 105, waveX = labW + 6, waveW = w - labW - 14;
+      const bH = Math.min(h / L.length, 60);
+      const tH = bH * L.length, sY = (h - tH) / 2;
+
+      L.forEach((l, i) => {
+        const cy = sY + bH * i + bH / 2;
+        const bf = Math.abs(l.beat);
+        const ct = Math.min(l.carrier / 80, 6);
+        const lg = l.gain ?? 1;
+        const amp = bH * 0.3 * lg;
+        const bc = bandColor(l.beat);
+        const si = stack.findIndex(s => Math.abs(s.hz - l.carrier) < 1);
+        const sInfo = si >= 0 ? stack[si] : null;
+
+        ctx.strokeStyle = "rgba(255,255,255,0.025)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(waveX, cy); ctx.lineTo(waveX + waveW, cy); ctx.stroke();
+
+        ctx.strokeStyle = bc; ctx.lineWidth = 3; ctx.globalAlpha = 0.055 * lg;
+        ctx.beginPath();
+        for (let x = 0; x < waveW; x++) {
+          const xN = x / waveW;
+          const y = cy + (Math.sin(2*Math.PI*bf*(xN*4+t)) + Math.sin(2*Math.PI*ct*(xN*4+t*1.8))*0.15) * amp;
+          x===0 ? ctx.moveTo(waveX+x,y) : ctx.lineTo(waveX+x,y);
+        }
+        ctx.stroke();
+        ctx.lineWidth = 1.2; ctx.globalAlpha = 0.5 * (0.4 + 0.6*lg);
+        ctx.beginPath();
+        for (let x = 0; x < waveW; x++) {
+          const xN = x / waveW;
+          const y = cy + (Math.sin(2*Math.PI*bf*(xN*4+t)) + Math.sin(2*Math.PI*ct*(xN*4+t*1.8))*0.15) * amp;
+          x===0 ? ctx.moveTo(waveX+x,y) : ctx.lineTo(waveX+x,y);
+        }
+        ctx.stroke(); ctx.globalAlpha = 1;
+
+        const lx = 6, topY = cy - bH * 0.38;
+        ctx.fillStyle = bc; ctx.globalAlpha = 0.85; ctx.font = "600 9px 'JetBrains Mono',monospace";
+        ctx.fillText(bandName(l.beat).toUpperCase(), lx, topY+10);
+        if (lg < 1) { ctx.fillStyle="#8a7a60"; ctx.globalAlpha=0.5; ctx.font="400 8px 'JetBrains Mono',monospace"; ctx.fillText(Math.round(lg*100)+"%", lx+48, topY+10); }
+        ctx.fillStyle = "#d0c8b8"; ctx.globalAlpha = 0.75; ctx.font = "500 12px 'JetBrains Mono',monospace";
+        ctx.fillText(l.beat + " Hz", lx, topY+24);
+        ctx.fillStyle = "#6b6255"; ctx.globalAlpha = 0.5; ctx.font = "400 9px 'JetBrains Mono',monospace";
+        ctx.fillText(l.carrier + (sInfo ? " "+sInfo.label : ""), lx, topY+36);
+        ctx.globalAlpha = 1;
+      });
+
+      const cY = sY + tH + bH*0.25;
+      if (cY < h - 4) {
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 0.8; ctx.globalAlpha = 0.1;
+        ctx.beginPath();
+        for (let x=0;x<waveW;x++) {
+          const xN=x/waveW; let s=0;
+          L.forEach(l => { s += Math.sin(2*Math.PI*Math.abs(l.beat)*(xN*4+t))*(l.gain??1); });
+          s/=L.length; ctx.lineTo(waveX+x, cY+s*9);
+        }
+        ctx.stroke(); ctx.globalAlpha=0.15; ctx.fillStyle="#888";
+        ctx.font="9px 'JetBrains Mono',monospace"; ctx.fillText("composite",6,cY-5); ctx.globalAlpha=1;
+      }
+      animRef.current = requestAnimationFrame(draw);
+    };
+    animRef.current = requestAnimationFrame(draw);
+    return () => { on=false; cancelAnimationFrame(animRef.current); };
+  }, [state, resolvedLayers, stack]);
+
+  const P = { background:"rgba(8,8,16,0.92)", backdropFilter:"blur(12px)", border:"1px solid rgba(196,153,60,0.12)", borderRadius:8 };
+  const fmtTime = (s) => `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+
+  return (
+    <div style={{ width:"100vw", height:"100vh", background:"#06060c", color:"#e0d8c8", fontFamily:"'Cinzel',Georgia,serif", display:"flex", flexDirection:"column", overflow:"hidden" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", flexShrink:0 }}>
+        <div>
+          <div style={{ fontSize:14, letterSpacing:3, fontWeight:600, color:"#c4993c" }}>HARMONIC ENTRAINMENT ENGINE · V3 LAB</div>
+          <div style={{ fontSize:9, letterSpacing:3, color:"#9a8c70", fontFamily:"'JetBrains Mono',monospace" }}>{root} Hz ROOT · {stack.length} CARRIERS · {carrierMode === "legacy" ? "V2 FIELD" : "CONSONANT FIELD"} · φ-SCALED BEATS</div>
+        </div>
+        <div style={{ display:"flex", gap:6 }}>
+          <button onClick={() => setShowLab(!showLab)} style={{ background:showLab?"rgba(196,153,60,0.12)":"none", border:"1px solid rgba(196,153,60,0.3)", color:"#c4993c", padding:"5px 10px", borderRadius:5, cursor:"pointer", fontSize:10, fontFamily:"'JetBrains Mono',monospace" }}>
+            LAB
+          </button>
+          <button onClick={() => setShowInfo(!showInfo)} style={{ background:"none", border:"1px solid rgba(196,153,60,0.3)", color:"#c4993c", padding:"5px 10px", borderRadius:5, cursor:"pointer", fontSize:10, fontFamily:"'JetBrains Mono',monospace" }}>
+            INFO
+          </button>
+        </div>
+      </div>
+
+      {/* Viz Module */}
+      <div style={{ flex:"1 1 auto", margin:"0 12px", borderRadius:10, border:`1px solid ${state.color}20`, background:"rgba(10,10,18,0.5)", position:"relative", overflow:"hidden", minHeight:0 }}>
+        <div style={{ position:"absolute", top:8, right:12, zIndex:1, fontFamily:"'JetBrains Mono',monospace", textAlign:"right" }}>
+          <div style={{ fontSize:12, color:state.color, fontWeight:600, letterSpacing:2 }}>{state.name.toUpperCase()}</div>
+          <div style={{ fontSize:9, color:"#9a8c70" }}>{resolvedLayers.length}L · seed {state.seed} Hz</div>
+          {remaining !== null && (
+            <div style={{ fontSize:10, color:state.color, marginTop:2 }}>{fmtTime(remaining)}</div>
+          )}
+        </div>
+        <canvas ref={canvasRef} style={{ width:"100%", height:"100%" }} />
+      </div>
+
+      {/* Info overlay */}
+      {showInfo && (
+        <div style={{ position:"absolute", zIndex:20, inset:0, background:"rgba(6,6,12,0.97)", display:"flex", alignItems:"flex-start", justifyContent:"center", padding:16, overflowY:"auto" }}>
+          <div style={{ maxWidth:620, lineHeight:1.7, fontSize:13, fontFamily:"'JetBrains Mono',monospace", color:"#c8bea8", paddingTop:12, paddingBottom:40 }}>
+            <div style={{ fontSize:18, color:"#c4993c", fontFamily:"'Cinzel',serif", marginBottom:14 }}>Architecture</div>
+            <p><strong style={{ color:"#efe8d8" }}>Carrier Field:</strong> V3 can A/B the original dynamic ratio stack against a compact six-note just-intonation chord field (1:1, 9:8, 5:4, 4:3, 3:2, 5:3), octave-folded into 110–480 Hz. Beat architecture remains unchanged.</p>
+            <div style={{ margin:"10px 0", padding:10, background:"rgba(255,255,255,0.02)", border:"1px solid rgba(196,153,60,0.2)", borderRadius:6 }}>
+              <div style={{ fontSize:9, letterSpacing:2, color:"#9a8c70", marginBottom:4 }}>CURRENT STACK ({root} Hz)</div>
+              {stack.map((c,i) => (
+                <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:"#c8bea8" }}>
+                  <span style={{ color:"#c4993c", fontWeight:600 }}>{c.hz} Hz</span>
+                  <span style={{ color:"#9a8c70" }}>{c.label}</span>
+                  <span style={{ color:"#6b6255" }}>{c.name}</span>
+                </div>
+              ))}
+            </div>
+            <p><strong style={{ color:"#efe8d8" }}>Beats — φ-scaled:</strong> From seed f: f/φ³, f/φ², f/φ, f, f×φ, f×φ². Adjacent layers always golden ratio apart.</p>
+            <p style={{marginTop:8}}><strong style={{ color:"#efe8d8" }}>Gamma (Lucid):</strong> 32 Hz = 4×2³. Three octaves above theta seed at 35% gain.</p>
+            <p style={{marginTop:8}}><strong style={{ color:"#efe8d8" }}>Pink Noise:</strong> Voss-McCartney algorithm. Fills spectral gaps between carriers, masks environmental sound, approximates Monroe's tape noise bed. Runs through the master bus, so it follows volume and fades.</p>
+            <p style={{marginTop:8}}><strong style={{ color:"#efe8d8" }}>Crossfade Engine:</strong> One persistent AudioContext. Switching states or roots crossfades voice groups over 2 s — no teardown, no clicks. Sessions fade in and out over 1.5 s.</p>
+            <p style={{marginTop:8}}><strong style={{ color:"#efe8d8" }}>Normalization:</strong> Layer gains divided by √(Σ gain²) — partial-gain overlays (Lucid, Asset) no longer pull the state's overall level down.</p>
+            <p style={{marginTop:8}}><strong style={{ color:"#efe8d8" }}>Timer:</strong> Optional session length. At zero, a slow 10 s fade closes the session.</p>
+            <button onClick={() => setShowInfo(false)} style={{ marginTop:14, background:"none", border:"1px solid rgba(196,153,60,0.3)", color:"#c4993c", padding:"6px 20px", borderRadius:5, cursor:"pointer", fontFamily:"'JetBrains Mono',monospace", fontSize:11 }}>CLOSE</button>
+          </div>
+        </div>
+      )}
+
+      {/* Controls */}
+      <div style={{ flexShrink:0, padding:"8px 12px 10px", display:"flex", flexDirection:"column", gap:7 }}>
+
+        {/* Root selector */}
+        <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+          <span style={{ fontSize:9, letterSpacing:2, color:"#9a8c70", fontFamily:"'JetBrains Mono',monospace", minWidth:34 }}>ROOT</span>
+          {ROOT_PRESETS.map(rp => (
+            <button key={rp.hz} onClick={() => { setRoot(rp.hz); setRootInput(String(rp.hz)); }} style={{
+              padding:"4px 10px", borderRadius:4, cursor:"pointer", fontSize:11,
+              fontFamily:"'JetBrains Mono',monospace",
+              background: root===rp.hz ? "rgba(196,153,60,0.15)" : "rgba(255,255,255,0.03)",
+              border:`1px solid ${root===rp.hz ? "#c4993c" : "rgba(255,255,255,0.06)"}`,
+              color: root===rp.hz ? "#c4993c" : "#9a8c70"
+            }}>{rp.hz}</button>
+          ))}
+          <input type="number" min="60" max="600" value={rootInput}
+            onChange={e => setRootInput(e.target.value)}
+            onBlur={() => { const v=parseFloat(rootInput); if(!isNaN(v)&&v>=60&&v<=600) setRoot(v); else setRootInput(String(root)); }}
+            onKeyDown={e => { if(e.key==="Enter") { const v=parseFloat(rootInput); if(!isNaN(v)&&v>=60&&v<=600) setRoot(v); else setRootInput(String(root)); e.target.blur(); }}}
+            style={{ width:58, padding:"4px 6px", borderRadius:4, background:"rgba(255,255,255,0.04)", border:"1px solid rgba(196,153,60,0.2)", color:"#c4993c", fontFamily:"'JetBrains Mono',monospace", fontSize:12, textAlign:"right", outline:"none" }}
+          />
+          <span style={{ fontSize:10, color:"#6b6255", fontFamily:"'JetBrains Mono',monospace" }}>Hz</span>
+          <span style={{ width:1, height:18, background:"rgba(196,153,60,0.16)", margin:"0 2px" }} />
+          {[{id:"legacy",label:"V2 FIELD"},{id:"chord",label:"CHORD FIELD"}].map(m => (
+            <button key={m.id} onClick={() => setCarrierMode(m.id)} style={{
+              padding:"4px 8px", borderRadius:4, cursor:"pointer", fontSize:9, fontFamily:"'JetBrains Mono',monospace",
+              background: carrierMode===m.id ? "rgba(196,153,60,0.15)" : "rgba(255,255,255,0.03)",
+              border:`1px solid ${carrierMode===m.id ? "#c4993c" : "rgba(255,255,255,0.06)"}`,
+              color: carrierMode===m.id ? "#c4993c" : "#6b6255"
+            }}>{m.label}</button>
+          ))}
+        </div>
+
+        {/* State selector */}
+        <div style={{ display:"flex", gap:3, flexWrap:"wrap" }}>
+          {STATES.map((s,i) => (
+            <button key={s.id} onClick={() => { setStateIdx(i); if (s.preferredRoot) { setRoot(s.preferredRoot); setRootInput(String(s.preferredRoot)); } }} style={{
+              flex:"1 1 auto", minWidth:55, padding:"7px 3px", borderRadius:5, cursor:"pointer",
+              background: i===stateIdx ? `${s.color}22` : "rgba(255,255,255,0.03)",
+              border:`1px solid ${i===stateIdx ? s.color : "rgba(255,255,255,0.06)"}`,
+              color: i===stateIdx ? s.color : "#9a8c70", transition:"all 0.3s",
+              fontFamily:"'Cinzel',serif", fontSize:11, textAlign:"center"
+            }}>
+              <div style={{ fontWeight:600 }}>{s.name}</div>
+              <div style={{ fontSize:7, marginTop:1, fontFamily:"'JetBrains Mono',monospace", opacity:0.7 }}>{s.layers.length}L</div>
+            </button>
+          ))}
+        </div>
+
+        {/* Description */}
+        <div style={{ fontSize:10, color:"#b0a888", fontFamily:"'JetBrains Mono',monospace", lineHeight:1.5, padding:"0 2px" }}>
+          <span style={{ color:state.color, fontWeight:500 }}>{state.subtitle}</span> — {state.desc}
+        </div>
+
+        {showLab && (
+          <div style={{ ...P, padding:"8px 10px", fontFamily:"'JetBrains Mono',monospace", fontSize:9, maxHeight:170, overflowY:"auto" }}>
+            <div style={{ display:"grid", gridTemplateColumns:"24px 64px 64px 76px 76px 42px 42px", gap:6, color:"#6f6657", letterSpacing:1, marginBottom:5 }}>
+              <span>#</span><span>CARRIER</span><span>BEAT</span><span>LEFT</span><span>RIGHT</span><span>MUTE</span><span>SOLO</span>
+            </div>
+            {resolvedLayers.map((l,i) => {
+              const g = l.gain ?? 1;
+              const left = l.carrier - l.beat/2, right = l.carrier + l.beat/2;
+              return (
+                <div key={i} style={{ display:"grid", gridTemplateColumns:"24px 64px 64px 76px 76px 42px 42px", gap:6, alignItems:"center", padding:"3px 0", opacity:l.muted?0.38:1, borderTop:i?"1px solid rgba(255,255,255,0.025)":"none" }}>
+                  <span style={{ color:bandColor(l.beat) }}>{i+1}</span>
+                  <span>{l.carrier.toFixed(2)}</span><span>{Number(l.beat).toFixed(2)}</span>
+                  <span>{left.toFixed(2)}</span><span>{right.toFixed(2)}</span>
+                  <button onClick={() => setMutedLayers(ms => ms.includes(i) ? ms.filter(x=>x!==i) : [...ms,i])} style={{ background:"none", border:"1px solid rgba(255,255,255,0.08)", color:mutedLayers.includes(i)?"#c4993c":"#777", borderRadius:3, cursor:"pointer", padding:"2px 4px", fontSize:8 }}>M</button>
+                  <button onClick={() => setSoloLayer(soloLayer===i?null:i)} style={{ background:"none", border:`1px solid ${soloLayer===i?state.color:"rgba(255,255,255,0.08)"}`, color:soloLayer===i?state.color:"#777", borderRadius:3, cursor:"pointer", padding:"2px 4px", fontSize:8 }}>S</button>
+                  {g < 1 && <span style={{ gridColumn:"2 / span 3", color:"#8a7a60" }}>overlay gain {Math.round(g*100)}%</span>}
+                </div>
+              );
+            })}
+            <div style={{ marginTop:6, color:"#7d725f" }}>Carrier field: <span style={{ color:"#c4993c" }}>{carrierMode === "legacy" ? "v2 dynamic ratio stack" : "compact JI hexachord"}</span>. M/S crossfades live.</div>
+          </div>
+        )}
+
+        {/* Volume + Pink + Timer + Play */}
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+          <div style={{ ...P, padding:"6px 12px", flex:"1 1 160px", display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ fontSize:8, letterSpacing:2, color:"#9a8c70", fontFamily:"'JetBrains Mono',monospace" }}>VOL</span>
+            <input type="range" min="0" max="0.5" step="0.01" value={volume} onChange={e => setVolume(parseFloat(e.target.value))} style={{ flex:1, accentColor:state.color }} />
+            <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:11, color:state.color, minWidth:28, textAlign:"right" }}>{Math.round((volume/0.5)*100)}%</span>
+          </div>
+
+          <div style={{ ...P, padding:"6px 10px", display:"flex", alignItems:"center", gap:6 }}>
+            <button onClick={() => setPinkNoise(!pinkNoise)} style={{
+              padding:"3px 8px", borderRadius:3, cursor:"pointer", fontSize:9,
+              fontFamily:"'JetBrains Mono',monospace", letterSpacing:1,
+              background: pinkNoise ? "rgba(170,130,100,0.15)" : "rgba(255,255,255,0.03)",
+              border:`1px solid ${pinkNoise ? "#aa8a6a" : "rgba(255,255,255,0.06)"}`,
+              color: pinkNoise ? "#ccaa88" : "#6b6255"
+            }}>PINK</button>
+            {pinkNoise && (
+              <input type="range" min="0" max="0.2" step="0.005" value={pinkVol}
+                onChange={e => setPinkVol(parseFloat(e.target.value))}
+                style={{ width:50, accentColor:"#aa8a6a" }} />
+            )}
+          </div>
+
+          <div style={{ ...P, padding:"6px 10px", display:"flex", alignItems:"center", gap:4 }}>
+            <span style={{ fontSize:8, letterSpacing:1, color:"#9a8c70", fontFamily:"'JetBrains Mono',monospace" }}>TIMER</span>
+            {[0, 10, 20, 30, 45].map(m => (
+              <button key={m} onClick={() => setTimerMin(m)} style={{
+                padding:"3px 7px", borderRadius:3, cursor:"pointer", fontSize:9,
+                fontFamily:"'JetBrains Mono',monospace",
+                background: timerMin===m ? "rgba(196,153,60,0.15)" : "rgba(255,255,255,0.03)",
+                border:`1px solid ${timerMin===m ? "#c4993c" : "rgba(255,255,255,0.06)"}`,
+                color: timerMin===m ? "#c4993c" : "#6b6255"
+              }}>{m === 0 ? "∞" : m}</button>
+            ))}
+          </div>
+
+          <button onClick={togglePlay} style={{
+            ...P, padding:"8px 24px", cursor:"pointer", flex:"1 1 120px",
+            display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+            background: playing ? `${state.color}18` : "rgba(196,153,60,0.08)",
+            border:`1px solid ${playing ? state.color : "rgba(196,153,60,0.3)"}`,
+            color: playing ? state.color : "#c4993c",
+            transition:"all 0.4s", fontSize:13, letterSpacing:3, fontFamily:"'Cinzel',serif"
+          }}>
+            <span style={{ fontSize:14 }}>{playing?"◼":"▶"}</span>
+            {playing?"STOP":"BEGIN"}
+          </button>
+        </div>
+
+        <div style={{ textAlign:"center", fontSize:8, color:"#3a3525", fontFamily:"'JetBrains Mono',monospace", letterSpacing:2 }}>
+          HEADPHONES REQUIRED · V3 LAB · {root} Hz · {carrierMode === "legacy" ? "V2 FIELD" : "CHORD FIELD"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<HarmonicEngine />);
+</script>
+</body>
+</html>
